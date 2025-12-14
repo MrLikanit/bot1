@@ -18,14 +18,12 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramBadRequest
 
 # ==========================================
-#        НАСТРОЙКИ (ИЗ ПЕРЕМЕННЫХ СРЕДЫ)
+#        НАСТРОЙКИ (ИЗ ОКРУЖЕНИЯ)
 # ==========================================
 
-# Ключи берутся из настроек сервера (Environment Variables)
 API_TOKEN = os.getenv("BOT_TOKEN")
 CMC_API_KEY = os.getenv("CMC_API_KEY")
 
-# Списки администраторов (можно оставить в коде)
 ADMIN_IDS = [
     1008747450, 
     1128228291,
@@ -35,12 +33,10 @@ MOD_IDS = [
     6061577974,
 ]
 
-# ID групп для рассылки
 TARGET_GROUPS = [
-    -1003224850709,
+    -1003512224256,
 ]
 
-# ID монеты FPI Bank
 CMC_FPI_ID = "35859"
 
 # ==========================================
@@ -53,9 +49,8 @@ DB_NAME = "bot_data.db"
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-# Проверка наличия ключей перед запуском
 if not API_TOKEN:
-    print("❌ КРИТИЧЕСКАЯ ОШИБКА: Не найден BOT_TOKEN в переменных окружения!")
+    print("❌ ОШИБКА: Не найден BOT_TOKEN!")
     sys.exit(1)
 
 bot = Bot(token=API_TOKEN)
@@ -84,10 +79,9 @@ async def log_action(user: types.User, action_text: str):
         now_str = datetime.now(TZ_7).strftime("%Y-%m-%d %H:%M:%S")
         username = user.username if user.username else user.first_name
         role = "ADMIN" if user.id in ADMIN_IDS else "MOD"
-        log_text = f"[{role}] {action_text}"
-        logging.info(f"[LOG] {username}: {log_text}")
+        logging.info(f"[LOG] {username}: {action_text}")
         async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute("INSERT INTO admin_logs (admin_id, username, action, timestamp) VALUES (?, ?, ?, ?)", (user.id, username, log_text, now_str))
+            await db.execute("INSERT INTO admin_logs (admin_id, username, action, timestamp) VALUES (?, ?, ?, ?)", (user.id, username, f"[{role}] {action_text}", now_str))
             await db.commit()
     except Exception as e: logging.error(f"Log err: {e}")
 
@@ -115,10 +109,8 @@ async def delete_message_links(source_msg_id):
 async def safe_edit_text(message: types.Message, text: str, reply_markup=None):
     try:
         await message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    except TelegramBadRequest:
-        pass 
-    except Exception:
-        await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except TelegramBadRequest: pass 
+    except Exception: await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 # --- КЛАВИАТУРЫ ---
 def get_main_menu(user_id):
@@ -146,23 +138,20 @@ def get_time_choice_kb():
 
 # --- API: FPI BANK ---
 async def get_fpi_price():
-    if not CMC_API_KEY: return None, "CMC Key Error (Not found in ENV)"
+    if not CMC_API_KEY: return None, "CMC Key Error"
     try:
         url = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
         headers = {'X-CMC_PRO_API_KEY': CMC_API_KEY}
         params = {'id': CMC_FPI_ID, 'convert': 'USD'}
-        
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, params=params) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     coin = data['data'].get(CMC_FPI_ID)
                     if not coin: return None, "Coin not found"
-                    
                     usd = coin['quote']['USD']['price']
                     change = coin['quote']['USD']['percent_change_24h']
                     rub = usd * 100 
-                    
                     return {'rub': f"{rub:,.6f}", 'usd': f"{usd:,.6f}", 'change': change}, None
                 return None, f"CMC Error: {resp.status}"
     except Exception as e: return None, str(e)
@@ -182,7 +171,6 @@ async def cmd_del(message: types.Message):
     if message.from_user.id not in ADMIN_IDS or not message.reply_to_message: return
     links = await get_message_links(message.reply_to_message.message_id)
     if not links: return await message.reply("Сообщение не найдено в базе.")
-    
     cnt = 0
     for chat, msg in links:
         try:
@@ -212,14 +200,14 @@ async def chat_msg(message: types.Message, state: FSMContext):
     if message.text == "⬅️ Выйти из чата":
         await state.clear()
         return await message.answer("Выход", reply_markup=get_main_menu(message.from_user.id))
-    
     sender_id = message.from_user.id
     for uid in ALL_STAFF_IDS:
         if uid != sender_id:
             try:
                 prefix = "👑" if sender_id in ADMIN_IDS else "👮"
+                # Используем copy_message для сохранения эмодзи в чате
                 await bot.send_message(uid, f"💬 {prefix} **{message.from_user.first_name}:**", parse_mode="Markdown")
-                await message.copy_to(uid)
+                await message.copy_to(uid) 
             except: pass
 
 # --- FPI ---
@@ -229,12 +217,8 @@ async def fpi_proc(message: types.Message):
     wait = await message.answer("⏳...")
     data, err = await get_fpi_price()
     if err: return await safe_edit_text(wait, f"❌ Ошибка: {err}")
-    
     trend = "🟢" if data['change'] > 0 else "🔴"
-    text = (f"🏦 **FPI Bank**\n\n"
-            f"🇺🇸 USD: **${data['usd']}**\n"
-            f"🇷🇺 RUB: **{data['rub']} ₽** (≈)\n"
-            f"{trend} 24ч: **{data['change']:.2f}%**")
+    text = (f"🏦 **FPI Bank**\n\n🇺🇸 USD: **${data['usd']}**\n🇷🇺 RUB: **{data['rub']} ₽** (≈)\n{trend} 24ч: **{data['change']:.2f}%**")
     await safe_edit_text(wait, text)
 
 # --- РАССЫЛКА ---
@@ -247,12 +231,10 @@ async def bc_enter(message: types.Message, state: FSMContext):
 @dp.message(BroadcastState.waiting_for_content)
 async def bc_content(message: types.Message, state: FSMContext):
     await state.update_data(msg_id=message.message_id, chat_id=message.chat.id)
+    # Используем copy_message для превью - это сохраняет ВСЕ эмодзи
     await message.answer("👀 **Превью сообщения:**", parse_mode="Markdown")
-    try:
-        await message.copy_to(message.chat.id)
-    except:
-        await message.answer("Ошибка предпросмотра.")
-
+    try: await message.copy_to(message.chat.id)
+    except: pass
     await message.answer("🛠 **Что делаем?**", reply_markup=get_type_kb(), parse_mode="Markdown")
     await state.set_state(BroadcastState.choose_type)
 
@@ -263,10 +245,8 @@ async def bc_type(callback: types.CallbackQuery, state: FSMContext):
         await state.clear()
         await safe_edit_text(callback.message, "❌ Отменено.")
         return
-
     is_pin = (callback.data == "type_pin")
     await state.update_data(pin_mode=is_pin)
-    
     mode_text = "С закрепом 📌" if is_pin else "Обычная 🚀"
     await safe_edit_text(callback.message, f"Режим: **{mode_text}**\nКогда отправить?", reply_markup=get_time_choice_kb())
     await state.set_state(BroadcastState.choose_time)
@@ -278,7 +258,6 @@ async def bc_time(callback: types.CallbackQuery, state: FSMContext):
         await state.set_state(BroadcastState.choose_type)
         await safe_edit_text(callback.message, "Выберите тип:", reply_markup=get_type_kb())
         return
-    
     if callback.data == "time_now":
         d = await state.get_data()
         pin_mode = d.get('pin_mode', False)
@@ -295,21 +274,19 @@ async def bc_time(callback: types.CallbackQuery, state: FSMContext):
 async def bc_date(message: types.Message, state: FSMContext):
     try:
         dt = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M").replace(tzinfo=TZ_7)
-        if dt.timestamp() < datetime.now(TZ_7).timestamp(): 
-            await message.answer("⚠️ Эта дата уже прошла!")
-            return
+        if dt.timestamp() < datetime.now(TZ_7).timestamp(): return await message.answer("⚠️ Дата уже прошла!")
         d = await state.get_data()
         pin_mode = d.get('pin_mode', False)
         await add_scheduled_task(d['chat_id'], d['msg_id'], dt.timestamp(), 1 if pin_mode else 0)
         await message.answer(f"✅ **Запланировано:** `{dt}`", parse_mode="Markdown")
         await state.clear()
-    except: 
-        await message.answer("⚠️ Формат: `ДД.ММ.ГГГГ ЧЧ:ММ`")
+    except: await message.answer("⚠️ Формат: `ДД.ММ.ГГГГ ЧЧ:ММ`")
 
 async def distribute_message(from_chat_id, message_id, pin_mode):
     if not TARGET_GROUPS: return
     for group_id in TARGET_GROUPS:
         try:
+            # COPY_MESSAGE - это ключ к премиум эмодзи. Он копирует сообщение 1-в-1.
             sent_msg = await bot.copy_message(chat_id=group_id, from_chat_id=from_chat_id, message_id=message_id)
             await save_message_link(message_id, group_id, sent_msg.message_id)
             if pin_mode:
@@ -318,7 +295,7 @@ async def distribute_message(from_chat_id, message_id, pin_mode):
             await asyncio.sleep(0.1)
         except Exception as e: logging.error(f"Err {group_id}: {e}")
 
-# 🔥 ИСПРАВЛЕННЫЙ ОБРАБОТЧИК РЕДАКТИРОВАНИЯ 🔥
+# 🔥 ИСПРАВЛЕННЫЙ РЕДАКТОР С ПОДДЕРЖКОЙ PREMIUM EMOJI 🔥
 @dp.edited_message(F.chat.type == "private")
 async def handle_edit(message: types.Message):
     if message.from_user.id not in ADMIN_IDS: return
@@ -326,42 +303,41 @@ async def handle_edit(message: types.Message):
     links = await get_message_links(message.message_id)
     if not links: return
     
-    logging.info(f"[EDIT] {message.from_user.first_name} редактирует {message.message_id}")
+    logging.info(f"[EDIT] Изменение {message.message_id}")
     
     success_count = 0
     
     for target_chat_id, target_msg_id in links:
         try:
-            # Если это текст
+            # Ключевой момент: Мы передаем ENTITIES, а не просто текст.
+            # Entities содержат информацию о жирном шрифте, ссылках И ПРЕМИУМ ЭМОДЗИ.
+            # Parse_mode ставим None, чтобы не конфликтовал с entities.
+            
             if message.text:
                 await bot.edit_message_text(
                     text=message.text,
                     chat_id=target_chat_id,
                     message_id=target_msg_id,
-                    entities=message.entities, # Сохраняем форматирование
+                    entities=message.entities, # <--- ВОТ ЭТО СОХРАНЯЕТ ЭМОДЗИ
                     parse_mode=None
                 )
             
-            # Если это фото/видео с подписью
             elif message.caption is not None:
                 await bot.edit_message_caption(
                     caption=message.caption,
                     chat_id=target_chat_id,
                     message_id=target_msg_id,
-                    caption_entities=message.caption_entities, # Сохраняем форматирование
+                    caption_entities=message.caption_entities, # <--- И ЭТО ТОЖЕ
                     parse_mode=None
                 )
             success_count += 1
         except TelegramBadRequest as e:
-            if "message is not modified" in str(e):
-                pass # Это нормально, если текст не изменился
-            else:
-                logging.error(f"Ошибка редактирования в {target_chat_id}: {e}")
-        except Exception as e:
-            logging.error(f"Критическая ошибка редактирования: {e}")
+            if "message is not modified" in str(e): pass
+            else: logging.error(f"Edit err {target_chat_id}: {e}")
+        except Exception as e: logging.error(f"Crit edit err: {e}")
 
     if success_count > 0:
-        await message.reply(f"✅ Обновлено в {success_count} группах!", disable_notification=True)
+        await message.reply(f"✅ Изменено в {success_count} группах!", disable_notification=True)
 
 async def scheduler_worker():
     while True:
